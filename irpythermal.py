@@ -62,6 +62,9 @@ class Camera:
     fourLinePara: int
     cap: cv2.VideoCapture
     frame_raw_u16: np.ndarray
+    # Optional software-side custom coordinates (x, y) used for temperature
+    # readout in info(). If None, a default pattern of five points is used.
+    custom_coords: Tuple[Tuple[int, int], ...] | None
 
     camera_raw = False
     reference_frame = None
@@ -89,6 +92,9 @@ class Camera:
         self.fourLinePara = self.width * self.height
         self.init_parameters()
         self.userArea = self.amountPixels + 127
+
+        # By default no user-defined coordinates for software-side sampling.
+        self.custom_coords = None
 
         # Decide whether or not convert data to RGB
         self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
@@ -283,6 +289,37 @@ class Camera:
 
         temperatureTable = temperatureTable + self.userOffset
 
+        # Reconstruct the raw image (16-bit values) from the latest frame for
+        # software-side coordinate temperature sampling.
+        raw_image = (
+            self.frame_raw_u16[: self.fourLinePara]
+            .copy()
+            .reshape(self.height, self.width)
+        )
+
+        # Decide which coordinates to sample. If the user has set
+        # self.custom_coords explicitly (via set_custom_coords), use that
+        # (can be any length), otherwise fall back to a default pattern of
+        # five points.
+        if self.custom_coords is not None:
+            coords_to_sample = self.custom_coords
+        else:
+            coords_to_sample = (
+                (self.width // 4, self.height // 4),
+                (self.width // 2, self.height // 4),
+                (3 * self.width // 4, self.height // 4),
+                (self.width // 3, 2 * self.height // 3),
+                (2 * self.width // 3, 2 * self.height // 3),
+            )
+
+        coord_info: dict[str, object] = {}
+        for idx, (cx, cy) in enumerate(coords_to_sample, start=1):
+            if 0 <= cx < self.width and 0 <= cy < self.height:
+                raw_val = raw_image[cy, cx]
+                temp_c = temperatureTable[raw_val]
+                coord_info[f"coord_{idx}_point"] = (cx, cy)
+                coord_info[f"coord_{idx}_C"] = temp_c
+
         """ build infomation """
         info = {
             "temp_shutter": floatShutTemper,
@@ -320,7 +357,29 @@ class Camera:
             "Tcenter_C": temperatureTable[center_raw],
         }
 
+        # Add coordinate temperatures to the info dictionary
+        info.update(coord_info)
+
         return info, temperatureTable
+
+    def set_custom_coords(self, coords: Tuple[Tuple[int, int], ...]) -> None:
+        """Set software-side custom coordinates (x, y) for temperature readout.
+
+        Any number of coordinates is supported. They are exposed in the info()
+        result as:
+
+            coord_1_point, coord_1_C,
+            coord_2_point, coord_2_C,
+            ...
+
+        Passing an empty tuple clears the custom coordinates and restores
+        the default pattern.
+        """
+        if not coords:
+            self.custom_coords = None
+            return
+
+        self.custom_coords = tuple(coords)
 
     # read raw data from cam, seperate visible frame from metadata
     def read(self, raw=False,  max_retries=5, retry_delay=0.5) -> Tuple[bool, np.ndarray]:

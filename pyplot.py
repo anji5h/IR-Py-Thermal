@@ -45,7 +45,6 @@ CMAP_NAMES = [
     "tab10",
 ]
 
-
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Thermal Camera Viewer")
@@ -92,6 +91,15 @@ def parse_arguments() -> argparse.Namespace:
         "--negate",
         action='store_true',
         help="negate the signal send to the switch device, (useful for NO switches, or N-FETs)",
+    )
+    parser.add_argument(
+        "-c",
+        "--custom",
+        action="store_true",
+        help=(
+            "show temperatures at predefined custom coordinates instead of the "
+            "automatic min / max / center points"
+        ),
     )
     parser.add_argument(
         "file", nargs="?", type=str, help="use the emulator with the data in file.npy"
@@ -234,10 +242,22 @@ class AppState:
             pass
 
         self.annotations = utils.Annotations(self.ax, patches)
-        self.temp_annotations = {
-            "std": {"Tmin": "lightblue", "Tmax": "red", "Tcenter": "yellow"},
-            "user": {},
-        }
+
+        # When --custom is provided, use the constant CUSTOM_COORDINATES list
+        # to show temperatures at those specific points instead of the standard
+        # min / max / center annotations.
+        if getattr(args, "custom", False) and utils.CUSTOM_COORDINATES:
+            self.temp_annotations = {"std": {}, "user": {}}
+            for coord in utils.CUSTOM_COORDINATES:
+                # Keys in the "user" dict are coordinates themselves; the color
+                # value controls the annotation box color.
+                self.temp_annotations["user"][coord] = "white"
+        else:
+            # Default behavior: show Tmin, Tmax, and Tcenter annotations.
+            self.temp_annotations = {
+                "std": {"Tmin": "lightblue", "Tmax": "red", "Tcenter": "yellow"},
+                "user": {},
+            }
 
         # Add the patch to the Axes
         self.roi = ((0, 0), (0, 0))

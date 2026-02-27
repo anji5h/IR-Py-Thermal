@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import pickle
 import time
 
@@ -10,10 +11,34 @@ from skimage.exposure import equalize_hist, rescale_intensity
 import irpythermal
 import utils
 
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Thermal Camera OpenCV Viewer")
+    parser.add_argument(
+        "-c",
+        "--custom",
+        action="store_true",
+        help=(
+            "show temperatures at predefined custom coordinates instead of the "
+            "automatic min / max / center points"
+        ),
+    )
+    return parser.parse_args()
+
+args = parse_arguments()
+
 draw_temp = True
 
 # cap = ht301_hacklib.HT301()
 camera = irpythermal.Camera()
+
+# Whether to use custom coordinate temperatures or the built-in min/max/center.
+USE_CUSTOM_COORDS = bool(getattr(args, "custom", False) and utils.CUSTOM_COORDINATES)
+
+# If requested, configure the camera to compute temperatures at CUSTOM_COORDINATES
+# and expose them in the info() dictionary as coord_1_point / coord_1_C, etc.
+if USE_CUSTOM_COORDS:
+    camera.set_custom_coords(tuple(utils.CUSTOM_COORDINATES))
+
 window_name = str(type(camera).__name__)
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
@@ -115,36 +140,67 @@ while True:
         np.uint8
     )
     if draw_temp:
-        utils.drawTemperature(
-            frame,
-            rotatate_coordinate(
-                map(lambda x: upscale_factor * x, info["Tmin_point"]),
-                (camera.width * upscale_factor, camera.height * upscale_factor),
-                orientation,
-            ),
-            info["Tmin_C"],
-            (255, 128, 128),
-        )
-        utils.drawTemperature(
-            frame,
-            rotatate_coordinate(
-                map(lambda x: upscale_factor * x, info["Tmax_point"]),
-                (camera.width * upscale_factor, camera.height * upscale_factor),
-                orientation,
-            ),
-            info["Tmax_C"],
-            (0, 128, 255),
-        )
-        utils.drawTemperature(
-            frame,
-            rotatate_coordinate(
-                map(lambda x: upscale_factor * x, info["Tcenter_point"]),
-                (camera.width * upscale_factor, camera.height * upscale_factor),
-                orientation,
-            ),
-            info["Tcenter_C"],
-            (255, 255, 255),
-        )
+        if USE_CUSTOM_COORDS:
+            # Draw all custom coordinate temperatures from info dict:
+            #
+            #   coord_1_point, coord_1_C,
+            #   coord_2_point, coord_2_C,
+            #   ...
+            #
+            # These are computed in software by irpythermal.Camera.info().
+            i = 1
+            while True:
+                point_key = f"coord_{i}_point"
+                temp_key = f"coord_{i}_C"
+                if point_key not in info or temp_key not in info:
+                    break
+
+                coord = info[point_key]
+                temp_c = info[temp_key]
+
+                utils.drawTemperature(
+                    frame,
+                    rotatate_coordinate(
+                        map(lambda x: upscale_factor * x, coord),
+                        (camera.width * upscale_factor, camera.height * upscale_factor),
+                        orientation,
+                    ),
+                    temp_c,
+                    (255, 255, 255),
+                )
+                i += 1
+        else:
+            # Default behavior: show Tmin, Tmax, and Tcenter.
+            utils.drawTemperature(
+                frame,
+                rotatate_coordinate(
+                    map(lambda x: upscale_factor * x, info["Tmin_point"]),
+                    (camera.width * upscale_factor, camera.height * upscale_factor),
+                    orientation,
+                ),
+                info["Tmin_C"],
+                (255, 128, 128),
+            )
+            utils.drawTemperature(
+                frame,
+                rotatate_coordinate(
+                    map(lambda x: upscale_factor * x, info["Tmax_point"]),
+                    (camera.width * upscale_factor, camera.height * upscale_factor),
+                    orientation,
+                ),
+                info["Tmax_C"],
+                (0, 128, 255),
+            )
+            utils.drawTemperature(
+                frame,
+                rotatate_coordinate(
+                    map(lambda x: upscale_factor * x, info["Tcenter_point"]),
+                    (camera.width * upscale_factor, camera.height * upscale_factor),
+                    orientation,
+                ),
+                info["Tcenter_C"],
+                (255, 255, 255),
+            )
         # draw fps
 
         # to keep the fps displayed from jittering too much, we average the last 10 frames

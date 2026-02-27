@@ -3,6 +3,13 @@
 import cv2
 import numpy as np
 
+# List of custom coordinates (x, y) in pixel space for the thermal frame.
+# You can add or remove points here; any number of coordinates is supported.
+CUSTOM_COORDINATES = [
+    (141.5, 42.5),
+    (139, 95),
+    (137.5, 147),
+]
 
 def drawTemperature(img, point, T, color=(0, 0, 0)):
     d1, d2 = 2, 5
@@ -138,9 +145,14 @@ class Annotations:
         d.clear()
 
     def _ann_set_temp(self, ann, pos, annotation_frame, draw_temp):
-        (x, y) = pos
-        ann.xy = pos
-        value = annotation_frame[pos[1], pos[0]]
+        # Ensure integer, in-bounds coordinates before indexing into the frame.
+        x = int(round(pos[0]))
+        y = int(round(pos[1]))
+        x = max(0, min(x, annotation_frame.shape[1] - 1))
+        y = max(0, min(y, annotation_frame.shape[0] - 1))
+
+        ann.xy = (x, y)
+        value = annotation_frame[y, x]
         ann.set_text("%.2f$^\circ$C" % value)
         ann.set_visible(draw_temp)
         tx, ty = 20, 15
