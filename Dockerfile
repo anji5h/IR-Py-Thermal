@@ -16,7 +16,7 @@ RUN curl -sSL https://install.python-poetry.org | python - && \
 
 WORKDIR /app
 
-COPY pyproject.toml poetry.lock* ./
+COPY pyproject.toml poetry.lock* README.md ./
 
 RUN poetry check && poetry install --no-root --only main
 
