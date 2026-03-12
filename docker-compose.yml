@@ -7,4 +7,3 @@ services:
       - /dev/video1:/dev/video1
     ports:
       - "8000:8000"
-    command: ["python", "pyplot.py", "-r", "-c", "-o", "8.5"]
