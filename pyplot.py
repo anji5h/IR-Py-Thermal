@@ -9,6 +9,9 @@ import time
 from datetime import datetime
 
 import cv2
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import serial
@@ -692,7 +695,7 @@ def onmotion(event):
 
 
 def main() -> None:
-    _keep_me_anim = animation.FuncAnimation(
+    animation.FuncAnimation(
         app_state.fig,
         animate_func,
         interval=1000 / app_state.fps,
@@ -704,7 +707,12 @@ def main() -> None:
     app_state.fig.canvas.mpl_connect("key_press_event", press)
 
     print_help()
-    plt.show()
+    while True:
+        try:
+            plt.pause(1)
+        except Exception as exc:
+            print(f"Error in main loop: {exc}")
+            break
     stop_capture(app_state.lock_in_thread)
     app_state.camera.release()
 
