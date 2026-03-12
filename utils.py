@@ -6,10 +6,26 @@ import numpy as np
 # List of custom coordinates (x, y) in pixel space for the thermal frame.
 # You can add or remove points here; any number of coordinates is supported.
 CUSTOM_COORDINATES = [
-    (141.5, 42.5),
-    (139, 95),
-    (137.5, 147),
+    # high endurnance sd cards
+    (34, 57),
+    (36, 78),
+    (38, 96),
+    (40, 111),
+    (43, 125),
+    # industrial sd cards
+    (142, 51),
+    (139, 72),
+    (136, 90),
+    (134, 106),
+    (132, 120),
+    # ultra sd cards
+    (234, 60),
+    (226, 79),
+    (219, 95),
+    (213, 110),
+    (207, 123),
 ]
+
 
 def drawTemperature(img, point, T, color=(0, 0, 0)):
     d1, d2 = 2, 5
