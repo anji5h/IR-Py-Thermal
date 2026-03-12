@@ -17,6 +17,7 @@ from matplotlib.backend_bases import MouseButton
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import irpythermal
+from prometheus import PrometheusExporter
 import utils
 
 # TODO(frans): We should get rid of those
@@ -44,6 +45,7 @@ CMAP_NAMES = [
     "gray",
     "tab10",
 ]
+
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
@@ -89,7 +91,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "-n",
         "--negate",
-        action='store_true',
+        action="store_true",
         help="negate the signal send to the switch device, (useful for NO switches, or N-FETs)",
     )
     parser.add_argument(
@@ -98,7 +100,8 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help=(
             "show temperatures at predefined custom coordinates instead of the "
-            "automatic min / max / center points"
+            "automatic min / max / center points and export them as custom "
+            "Prometheus metrics"
         ),
     )
     parser.add_argument(
@@ -174,13 +177,17 @@ class AppState:
         self.is_capturing = False
         self.lock = threading.Lock()
         self.lock_in_thread = None
+        # Prometheus exporter, created only when custom mode is enabled.
+        self.prom_exporter = None
 
         if self.lockin:
             self.fig, self.axes = plt.subplots(nrows=2, ncols=2, layout="tight")
             axes = self.axes
             self.ax = axes[0][0]
             self.im = axes[0][0].imshow(self.frame, cmap=CMAP_NAMES[self.cmaps_idx])
-            self.im_in_phase = axes[0][1].imshow(self.frame, cmap=CMAP_NAMES[self.cmaps_idx])
+            self.im_in_phase = axes[0][1].imshow(
+                self.frame, cmap=CMAP_NAMES[self.cmaps_idx]
+            )
             self.im_quadrature = axes[1][1].imshow(
                 self.frame, cmap=CMAP_NAMES[self.cmaps_idx]
             )
@@ -252,6 +259,11 @@ class AppState:
                 # Keys in the "user" dict are coordinates themselves; the color
                 # value controls the annotation box color.
                 self.temp_annotations["user"][coord] = "white"
+            # Also set up the Prometheus exporter to export temperatures at those coordinates.
+            self.prom_exporter = PrometheusExporter(
+                port=8000,
+                interval_sec=5.0,
+            )
         else:
             # Default behavior: show Tmin, Tmax, and Tcenter annotations.
             self.temp_annotations = {
@@ -291,7 +303,7 @@ def log_annotations_to_csv(annotation_frame) -> None:
             writer.writerow([datetime.now()] + anns_data)
 
 
-def get_lockin_frame(freq, port, integration, invert = False):
+def get_lockin_frame(freq, port, integration, invert=False):
     """
     Perform all of the lock-in thermometry operations.
 
@@ -463,6 +475,11 @@ def animate_func(_frame: int) -> None:
             app_state.update_colormap = False
             return []
 
+        # Export temperatures to Prometheus if a Prometheus exporter is
+        # configured (this is automatically enabled when --custom is used).
+        if app_state.prom_exporter is not None:
+            app_state.prom_exporter.export(annotation_frame, utils.CUSTOM_COORDINATES)
+
         if app_state.lockin:
             # adjust the color limits for the in-phase and quadrature frames
             app_state.im_in_phase.set_clim(
@@ -484,7 +501,8 @@ def animate_func(_frame: int) -> None:
 
 
 def print_help():
-    print("""keys:
+    print(
+        """keys:
     'h'      - help
     'q'      - quit
     ' '      - pause, resume
@@ -505,7 +523,8 @@ def print_help():
 mouse:
     left  button - add Region Of Interest (ROI)
     right button - add user temperature annotation
-""")
+"""
+    )
 
 
 FILE_NAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
@@ -674,7 +693,11 @@ def onmotion(event):
 
 def main() -> None:
     _keep_me_anim = animation.FuncAnimation(
-        app_state.fig, animate_func, interval=1000 / app_state.fps, blit=True, cache_frame_data=False
+        app_state.fig,
+        animate_func,
+        interval=1000 / app_state.fps,
+        blit=True,
+        cache_frame_data=False,
     )
     app_state.fig.canvas.mpl_connect("button_press_event", onclick)
     app_state.fig.canvas.mpl_connect("motion_notify_event", onmotion)
