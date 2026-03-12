@@ -2,11 +2,9 @@ services:
   ir-py-thermal:
     build: .
     container_name: ir-py-thermal
-    volumes:
+    devices:
       - /dev/video0:/dev/video0
       - /dev/video1:/dev/video1
     ports:
       - "8000:8000"
-    environment:
-      POETRY_VIRTUALENVS_CREATE: "false"
     command: ["python", "pyplot.py", "-r", "-c", "-o", "8.5"]
