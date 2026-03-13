@@ -15,6 +15,7 @@ import numpy as np
 import serial
 
 import irpythermal
+from prometheus import PrometheusExporter
 import utils
 
 
@@ -148,6 +149,7 @@ class AppState:
     status_text_obj: Optional[object] = None
     status_text: str = ""
     annotations: Optional[object] = None
+    prom_exporter: Optional[object] = None
 
 
 def create_camera(args: argparse.Namespace) -> irpythermal.Camera:
@@ -195,6 +197,7 @@ def create_app_state(args: argparse.Namespace) -> AppState:
     state.diff.frame = np.zeros((camera.height, camera.width))
 
     if args.custom:
+        state.prom_exporter = PrometheusExporter(port=8000)
         state.temp_annotations = {"std": {}, "user": {}}
         for coord in utils.CUSTOM_COORDINATES:
             state.temp_annotations["user"][coord] = "white"
@@ -434,17 +437,24 @@ def build_animation_callback(state: AppState):
         )
 
         if state.exposure.auto:
+            exposure_dict = {
+                "auto": state.exposure.auto,
+                "auto_type": state.exposure.auto_type,
+                "T_min": state.exposure.t_min,
+                "T_max": state.exposure.t_max,
+                "T_margin": state.exposure.t_margin,
+            }
+
             state.update_colormap = utils.autoExposure(
                 state.update_colormap,
-                {
-                    "auto": state.exposure.auto,
-                    "auto_type": state.exposure.auto_type,
-                    "T_min": state.exposure.t_min,
-                    "T_max": state.exposure.t_max,
-                    "T_margin": state.exposure.t_margin,
-                },
+                exposure_dict,
                 show_frame,
             )
+
+            state.exposure.t_min = exposure_dict["T_min"]
+            state.exposure.t_max = exposure_dict["T_max"]
+            state.exposure.t_margin = exposure_dict["T_margin"]
+            state.exposure.auto_type = exposure_dict["auto_type"]
 
         log_annotations_to_csv(state, annotation_frame)
 
@@ -611,12 +621,13 @@ def run_gui(state: AppState) -> None:
 def main() -> None:
     state = create_app_state(parse_arguments())
 
-    if state.headless:
+    if state.headless and state.prom_exporter is not None:
         while True:
             state.frame = state.camera.get_frame()
-            time.sleep(1)
-
-    run_gui(state)
+            state.prom_exporter.export(state.frame, utils.CUSTOM_COORDINATES)
+            time.sleep(5)
+    else:
+        run_gui(state)
 
 
 if __name__ == "__main__":
