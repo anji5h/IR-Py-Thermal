@@ -6,37 +6,19 @@ import math
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 import cv2
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import serial
-from matplotlib import animation, patches
-from matplotlib.backend_bases import MouseButton
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import irpythermal
 from prometheus import PrometheusExporter
 import utils
 
-# TODO(frans): We should get rid of those
-# ruff: noqa: PTH123           # use Path.open
-# ruff: noqa: ANN201,ANN001    # type annotations
-# ruff: noqa: DTZ005           # timezone missing
-# ruff: noqa: RUF005           # tuple / list concatenation
-# ruff: noqa: D100,D101,D103   # documentation missing
-# ruff: noqa: PLR0915          # too many statements
-# ruff: noqa: C901             # function too complex
-# ruff: noqa: PLR0912          # too many branches
-# ruff: noqa: FIX002           # fix instead of TODO
-# ruff: noqa: ERA001           # commented out code
-# ruff: noqa: SIM105,S110,E722 # exceptions
 
-# see https://matplotlib.org/tutorials/colors/colormaps.html
 CMAP_NAMES = [
     "inferno",
     "plasma",
@@ -49,672 +31,625 @@ CMAP_NAMES = [
     "tab10",
 ]
 
+FILE_NAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
+
 
 def parse_arguments() -> argparse.Namespace:
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Thermal Camera Viewer")
-    parser.add_argument(
-        "-r", "--rawcam", action="store_true", help="use the raw camera"
-    )
-    parser.add_argument(
-        "-d", "--device", type=str, help="use the camera at camera_path"
-    )
-    parser.add_argument(
-        "-o",
-        "--offset",
-        type=float,
-        help="set a fixed offset for the temperature data",
-    )
 
-    # lock in thermometry options (all of these are requred)
+    parser.add_argument(
+        "-r", "--rawcam", action="store_true", help="Use raw camera mode"
+    )
+    parser.add_argument(
+        "-d", "--device", type=str, help="Video device path, e.g. /dev/video0"
+    )
+    parser.add_argument("-o", "--offset", type=float, help="Fixed temperature offset")
+
     parser.add_argument(
         "-l",
         "--lockin",
         type=float,
-        help=(
-            "enable lock-in thermometry with the given frequency (in Hz),"
-            " ideally several times smaller than the camera fps"
-        ),
+        help="Enable lock-in thermometry with the given frequency in Hz",
     )
     parser.add_argument(
         "-p",
         "--port",
         type=str,
-        help=(
-            "set the serial port for the power supply control (will send 1 to turn on"
-            " the load, 0 to turn it off new line terminated) at 115200 baud"
-        ),
+        help="Serial port for power/load control, e.g. /dev/ttyUSB0",
     )
     parser.add_argument(
         "-i",
         "--integration",
         type=float,
-        help="set the integration time for the lock-in thermometry (in seconds)",
+        help="Integration time for lock-in thermometry in seconds",
     )
     parser.add_argument(
         "-n",
         "--negate",
         action="store_true",
-        help="negate the signal send to the switch device, (useful for NO switches, or N-FETs)",
+        help="Invert the serial load signal",
     )
     parser.add_argument(
         "-c",
         "--custom",
         action="store_true",
-        help=(
-            "show temperatures at predefined custom coordinates instead of the "
-            "automatic min / max / center points and export them as custom "
-            "Prometheus metrics"
-        ),
+        help="Use predefined custom coordinates and export them to Prometheus",
     )
     parser.add_argument(
-        "file", nargs="?", type=str, help="use the emulator with the data in file.npy"
+        "--headless",
+        action="store_true",
+        help="Run without GUI and only export metrics / process frames",
     )
+    parser.add_argument(
+        "--prometheus-port",
+        type=int,
+        default=8000,
+        help="Port for Prometheus metrics endpoint",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help="Frame polling interval in headless mode, seconds",
+    )
+    parser.add_argument(
+        "file",
+        nargs="?",
+        type=str,
+        help="Use emulator input from file.npy",
+    )
+
     return parser.parse_args()
 
 
-args = parse_arguments()
+@dataclass
+class ExposureState:
+    auto: bool = True
+    auto_type: str = "ends"
+    t_min: float = 0.0
+    t_max: float = 50.0
+    t_margin: float = 2.0
 
 
+@dataclass
+class DiffState:
+    enabled: bool = False
+    annotation_enabled: bool = False
+    frame: Optional[np.ndarray] = None
+
+
+@dataclass
 class AppState:
-    def __init__(self, args: argparse.Namespace) -> None:
-        """Set up a default application state."""
-        self.fps = 40
-        self.exposure = {
-            "auto": True,
-            "auto_type": "ends",  # 'center' or 'ends'
-            "T_min": 0.0,
-            "T_max": 50.0,
-            "T_margin": 2.0,
-        }
-        self.draw_temp = True
+    args: argparse.Namespace
+    camera: irpythermal.Camera
+    fps: int = 40
+    draw_temp: bool = True
+    lockin: bool = False
+    headless: bool = False
+    negate: bool = False
+    frequency: Optional[float] = None
+    port: Optional[str] = None
+    integration: Optional[float] = None
 
-        # Choose the camera class
-        self.camera: irpythermal.Camera
-        self.lockin = False
+    frame: Optional[np.ndarray] = None
+    quad_frame: Optional[np.ndarray] = None
+    in_phase_frame: Optional[np.ndarray] = None
 
-        if args.file and args.file.endswith(".npy"):
-            self.camera = irpythermal.CameraEmulator(args.file)
-        else:
-            camera_kwargs = {}
-            if args.rawcam:
-                camera_kwargs["camera_raw"] = True
-            if args.device:
-                camera_path = args.device
-                cv2_cam = cv2.VideoCapture(camera_path)
-                camera_kwargs["video_dev"] = cv2_cam
-            if args.offset:
-                camera_kwargs["fixed_offset"] = args.offset
+    exposure: ExposureState = field(default_factory=ExposureState)
+    diff: DiffState = field(default_factory=DiffState)
 
-            if args.lockin:
-                self.lockin = True
-                self.draw_temp = False
-                self.negate = False
-                # check if all lock-in thermometry options are provided
-                if not args.port or not args.integration:
-                    print(
-                        "Error: lock-in thermometry also requires --port and"
-                        " --integration options"
-                    )
-                    sys.exit(1)
+    cmaps_idx: int = 1
+    start_skips: int = 2
+    paused: bool = False
+    update_colormap: bool = True
+    is_capturing: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock_in_thread: Optional[threading.Thread] = None
 
-                if args.negate:
-                    self.negate = True
+    prom_exporter: Optional[PrometheusExporter] = None
+    temp_annotations: dict = field(default_factory=dict)
+    csv_filename: Optional[str] = None
 
-                self.fequency = args.lockin
-                self.port = args.port
-                self.integration = args.integration
+    mouse_action_pos: tuple[int, int] = (0, 0)
+    mouse_action: Optional[str] = None
+    roi: tuple[tuple[int, int], tuple[int, int]] = ((0, 0), (0, 0))
 
-            self.camera = irpythermal.Camera(**camera_kwargs)
+    fig: Optional[object] = None
+    ax: Optional[object] = None
+    im: Optional[object] = None
+    im_in_phase: Optional[object] = None
+    im_quadrature: Optional[object] = None
+    status_text_obj: Optional[object] = None
+    status_text: str = ""
+    annotations: Optional[object] = None
 
-        self.cmaps_idx = 1
 
-        # matplotlib.rcParams['toolbar'] = 'None'
+def create_camera(args: argparse.Namespace) -> irpythermal.Camera:
+    if args.file and args.file.endswith(".npy"):
+        return irpythermal.CameraEmulator(args.file)
 
-        # temporary fake frame
-        self.frame = np.full((self.camera.height, self.camera.width), 25.0)
-        self.quad_frame = np.full((self.camera.height, self.camera.width), 0.0)
-        self.in_phase_frame = np.full((self.camera.height, self.camera.width), 0.0)
-        self.lut = None  # will be defined later
-        self.start_skips = 2
-        self.is_capturing = False
-        self.lock = threading.Lock()
-        self.lock_in_thread = None
-        # Prometheus exporter, created only when custom mode is enabled.
-        self.prom_exporter = None
+    camera_kwargs = {}
 
-        if self.lockin:
-            self.fig, self.axes = plt.subplots(nrows=2, ncols=2, layout="tight")
-            axes = self.axes
-            self.ax = axes[0][0]
-            self.im = axes[0][0].imshow(self.frame, cmap=CMAP_NAMES[self.cmaps_idx])
-            self.im_in_phase = axes[0][1].imshow(
-                self.frame, cmap=CMAP_NAMES[self.cmaps_idx]
-            )
-            self.im_quadrature = axes[1][1].imshow(
-                self.frame, cmap=CMAP_NAMES[self.cmaps_idx]
-            )
-            axes[0][0].set_title("Live")
-            axes[0][1].set_title("In-phase")
-            axes[1][1].set_title("Quadrature")
-            divider = make_axes_locatable(axes[0][0])
-            divider_in_phase = make_axes_locatable(axes[0][1])
-            divider_quadrature = make_axes_locatable(axes[1][1])
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            cax_in_phase = divider_in_phase.append_axes("right", size="5%", pad=0.05)
-            cax_quadrature = divider_quadrature.append_axes(
-                "right", size="5%", pad=0.05
-            )
-            plt.colorbar(self.im, cax=cax)
-            self.cbar_in_phase = plt.colorbar(self.im_in_phase, cax=cax_in_phase)
-            self.cbar_quadrature = plt.colorbar(self.im_quadrature, cax=cax_quadrature)
+    if args.rawcam:
+        camera_kwargs["camera_raw"] = True
 
-            axes[1][0].axis("off")
-            status_text = """
-        Frame: -,
-        Time: -/-,
-        Load: -,
-        Frequency: -Hz,
-        Integration Time: -s
-        Serial Port: -
-        """
-            self.status_text_obj = axes[1][0].text(
-                0.05,
-                0.95,
-                status_text,
-                verticalalignment="top",
-                horizontalalignment="left",
-                transform=axes[1][0].transAxes,
-                fontsize=12,
-                color="black",
-            )
-            self.status_text = """
-        Frame: -,
-        Time: -/-,
-        Load: -,
-        Frequency: -Hz,
-        Integration Time: -s
-        Serial Port: -
-        """
+    if args.device:
+        camera_kwargs["video_dev"] = cv2.VideoCapture(args.device)
 
-        else:
-            self.fig = plt.figure()
-            self.ax = plt.gca()
-            self.im = self.ax.imshow(self.frame, cmap=CMAP_NAMES[self.cmaps_idx])
-            divider = make_axes_locatable(self.ax)
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            plt.colorbar(self.im, cax=cax)
+    if args.offset is not None:
+        camera_kwargs["fixed_offset"] = args.offset
 
-        try:
-            self.fig.canvas.set_window_title("Thermal Camera")
-        except:
-            # does not work on windows
-            pass
+    return irpythermal.Camera(**camera_kwargs)
 
-        self.annotations = utils.Annotations(self.ax, patches)
 
-        # When --custom is provided, use the constant CUSTOM_COORDINATES list
-        # to show temperatures at those specific points instead of the standard
-        # min / max / center annotations.
-        if getattr(args, "custom", False) and utils.CUSTOM_COORDINATES:
-            self.temp_annotations = {"std": {}, "user": {}}
-            for coord in utils.CUSTOM_COORDINATES:
-                # Keys in the "user" dict are coordinates themselves; the color
-                # value controls the annotation box color.
-                self.temp_annotations["user"][coord] = "white"
-            # Also set up the Prometheus exporter to export temperatures at those coordinates.
-            self.prom_exporter = PrometheusExporter(
-                port=8000,
-                interval_sec=5.0,
-            )
-        else:
-            # Default behavior: show Tmin, Tmax, and Tcenter annotations.
-            self.temp_annotations = {
-                "std": {"Tmin": "lightblue", "Tmax": "red", "Tcenter": "yellow"},
-                "user": {},
-            }
+def create_app_state(args: argparse.Namespace) -> AppState:
+    camera = create_camera(args)
 
-        # Add the patch to the Axes
-        self.roi = ((0, 0), (0, 0))
+    state = AppState(
+        args=args,
+        camera=camera,
+        headless=args.headless,
+        lockin=args.lockin is not None,
+        draw_temp=not bool(args.lockin),
+    )
 
-        self.paused = False
-        self.update_colormap = True
-        self.diff = {
-            "enabled": False,
-            "annotation_enabled": False,
-            "frame": np.zeros(self.frame.shape),
+    if state.lockin:
+        if not args.port or not args.integration:
+            print("Error: --lockin requires both --port and --integration", flush=True)
+            sys.exit(1)
+
+        state.frequency = args.lockin
+        state.port = args.port
+        state.integration = args.integration
+        state.negate = args.negate
+
+    state.frame = np.full((camera.height, camera.width), 25.0)
+    state.quad_frame = np.zeros((camera.height, camera.width))
+    state.in_phase_frame = np.zeros((camera.height, camera.width))
+    state.diff.frame = np.zeros((camera.height, camera.width))
+
+    if args.custom:
+        state.temp_annotations = {"std": {}, "user": {}}
+        for coord in utils.CUSTOM_COORDINATES:
+            state.temp_annotations["user"][coord] = "white"
+
+        state.prom_exporter = PrometheusExporter(port=args.prometheus_port)
+    else:
+        state.temp_annotations = {
+            "std": {"Tmin": "lightblue", "Tmax": "red", "Tcenter": "yellow"},
+            "user": {},
         }
 
-        self.csv_filename = None
-        self.mouse_action_pos = (0, 0)
-        self.mouse_action = None
+    return state
 
 
-app_state = AppState(args)
+def setup_gui(state: AppState) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib import patches
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+    if state.lockin:
+        fig, axes = plt.subplots(nrows=2, ncols=2, layout="tight")
+        state.fig = fig
+        state.ax = axes[0][0]
 
-def log_annotations_to_csv(annotation_frame) -> None:
-    anns_data = []
-    for ann_type in ["std", "user"]:
-        for ann_name in app_state.temp_annotations[ann_type]:
-            pos = app_state.annotations.get_pos(ann_name)
-            val = round(app_state.annotations.get_val(ann_name, annotation_frame), 2)
-            anns_data += [pos[0], pos[1], val]  # store each position and value
-    if app_state.csv_filename is not None:
-        with open(app_state.csv_filename, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([datetime.now()] + anns_data)
+        state.im = axes[0][0].imshow(state.frame, cmap=CMAP_NAMES[state.cmaps_idx])
+        state.im_in_phase = axes[0][1].imshow(
+            state.frame, cmap=CMAP_NAMES[state.cmaps_idx]
+        )
+        state.im_quadrature = axes[1][1].imshow(
+            state.frame, cmap=CMAP_NAMES[state.cmaps_idx]
+        )
 
+        axes[0][0].set_title("Live")
+        axes[0][1].set_title("In-phase")
+        axes[1][1].set_title("Quadrature")
+        axes[1][0].axis("off")
 
-def get_lockin_frame(freq, port, integration, invert=False):
-    """
-    Perform all of the lock-in thermometry operations.
+        divider = make_axes_locatable(axes[0][0])
+        divider_in_phase = make_axes_locatable(axes[0][1])
+        divider_quadrature = make_axes_locatable(axes[1][1])
 
-    Returns the in-phase and quadrature frames after the integration time is up, while
-    controlling the load via serial communication based on the period of the signal.
-    """
+        plt.colorbar(state.im, cax=divider.append_axes("right", size="5%", pad=0.05))
+        plt.colorbar(
+            state.im_in_phase,
+            cax=divider_in_phase.append_axes("right", size="5%", pad=0.05),
+        )
+        plt.colorbar(
+            state.im_quadrature,
+            cax=divider_quadrature.append_axes("right", size="5%", pad=0.05),
+        )
+
+        state.status_text = (
+            "Frame: -\n"
+            "Time: -/-\n"
+            "Load: -\n"
+            "Frequency: - Hz\n"
+            "Integration Time: - s\n"
+            "Serial Port: -"
+        )
+        state.status_text_obj = axes[1][0].text(
+            0.05,
+            0.95,
+            state.status_text,
+            verticalalignment="top",
+            horizontalalignment="left",
+            transform=axes[1][0].transAxes,
+            fontsize=12,
+            color="black",
+        )
+    else:
+        state.fig = plt.figure()
+        state.ax = plt.gca()
+        state.im = state.ax.imshow(state.frame, cmap=CMAP_NAMES[state.cmaps_idx])
+
+        divider = make_axes_locatable(state.ax)
+        plt.colorbar(state.im, cax=divider.append_axes("right", size="5%", pad=0.05))
+
     try:
-        ser = serial.Serial(port, 115200)  # Open the serial port
+        state.fig.canvas.manager.set_window_title("Thermal Camera")
+    except Exception:
+        pass
+
+    state.annotations = utils.Annotations(state.ax, patches)
+
+
+def cleanup(state: AppState) -> None:
+    stop_capture(state.lock_in_thread)
+    state.camera.release()
+
+
+def log_annotations_to_csv(state: AppState, annotation_frame: np.ndarray) -> None:
+    if state.csv_filename is None or state.annotations is None:
+        return
+
+    row = [datetime.now()]
+    for ann_type in ("std", "user"):
+        for ann_name in state.temp_annotations[ann_type]:
+            pos = state.annotations.get_pos(ann_name)
+            val = round(state.annotations.get_val(ann_name, annotation_frame), 2)
+            row.extend([pos[0], pos[1], val])
+
+    with open(state.csv_filename, "a", newline="") as f:
+        csv.writer(f).writerow(row)
+
+
+def get_lockin_frame(
+    state: AppState,
+    freq: float,
+    port: str,
+    integration: float,
+    invert: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        ser = serial.Serial(port, 115200)
     except serial.SerialException as exc:
-        print(f"Error: could not open serial port {port} ({exc})")
+        print(f"Error: could not open serial port {port} ({exc})", flush=True)
         sys.exit(1)
 
     start_time = time.time()
-    in_phase_sum = np.zeros((app_state.camera.height, app_state.camera.width))
-    quadrature_sum = np.zeros((app_state.camera.height, app_state.camera.width))
+    in_phase_sum = np.zeros((state.camera.height, state.camera.width))
+    quadrature_sum = np.zeros((state.camera.height, state.camera.width))
     total_frames = 0
 
-    # Calculate the period of the signal
     period = 1.0 / freq
-    half_period = period / 2.0  # Toggle every half period
-    load_on = True  # Track whether the load is on or off
-    last_toggle_time = start_time  # Track the last time we toggled the load
+    half_period = period / 2.0
+    load_on = True
+    last_toggle_time = start_time
 
     while (time.time() - start_time) < integration:
-        current_time = time.time() - start_time  # Time since the loop started
-        ret, raw_frame = app_state.camera.read()
-        info, lut = app_state.camera.info()
-
-        app_state.frame = app_state.camera.convert_to_frame(raw_frame, lut)
+        current_time = time.time() - start_time
+        ret, raw_frame = state.camera.read()
+        _, lut = state.camera.info()
 
         if not ret:
-            print("Error: could not read frame from camera")
+            print("Error: could not read frame from camera", flush=True)
             sys.exit(1)
 
+        state.frame = state.camera.convert_to_frame(raw_frame, lut)
         total_frames += 1
 
-        # if(total_frames % 10 == 0):
-        # print(f'Frame: {total_frames}, Time: {current_time:.2f}/{integration:.2f}')
-        if True:
-            app_state.status_text = f"""
-Frame: {total_frames},
-Time: {current_time:.2f}/{integration:.2f},
-Load: {load_on},
-Frequency: {freq:.2f}Hz,
-Integration Time: {integration:.2f}s
-Serial Port: {port}
-"""
+        state.status_text = (
+            f"Frame: {total_frames}\n"
+            f"Time: {current_time:.2f}/{integration:.2f}\n"
+            f"Load: {load_on}\n"
+            f"Frequency: {freq:.2f} Hz\n"
+            f"Integration Time: {integration:.2f} s\n"
+            f"Serial Port: {port}"
+        )
 
-        # Check if a half period has passed (i.e., time to toggle the load)
         if current_time - (last_toggle_time - start_time) >= half_period:
-            # Toggle the load state
             if load_on:
-                if invert:
-                    ser.write(b"1\n")  # Send 1 to turn the load on
-                else:
-                    ser.write(b"0\n")  # Send 0 to turn the load off
+                ser.write(b"1\n" if invert else b"0\n")
                 load_on = False
             else:
-                if invert:
-                    ser.write(b"0\n")  # Send 0 to turn the load off
-                else:
-                    ser.write(b"1\n")  # Send 1 to turn the load on
+                ser.write(b"0\n" if invert else b"1\n")
                 load_on = True
 
-            # print(f'Load state: {load_on}, Time: {current_time}')  # debugging
-
-            # Update the last toggle time
             last_toggle_time += half_period
 
-        # Calculate the phase angle based on the current time and frequency
         phase = 2 * math.pi * freq * current_time
-
-        # Calculate sine and cosine factors
         sin_weight = 2 * math.sin(phase)
         cos_weight = -2 * math.cos(phase)
 
-        # print(f"time: {current_time}, phase: {phase}"
-        #       f", sin: {sin_weight}, cos: {cos_weight} , load: {load_on}")
+        in_phase_sum += raw_frame * sin_weight
+        quadrature_sum += raw_frame * cos_weight
 
-        # Multiply the frame by sin and cos to get in-phase and quadrature components
-        in_phase = raw_frame * sin_weight
-        quadrature = raw_frame * cos_weight
-
-        # Accumulate the sums
-        in_phase_sum += in_phase
-        quadrature_sum += quadrature
-
-        if not app_state.is_capturing:
+        if not state.is_capturing:
             break
 
     ser.write(b"0\n")
     ser.close()
 
-    # After integration time, normalize by the total frames (optional)
-    in_phase_sum /= total_frames
-    quadrature_sum /= total_frames
+    if total_frames > 0:
+        in_phase_sum /= total_frames
+        quadrature_sum /= total_frames
 
     return in_phase_sum, quadrature_sum
 
 
-def capture_lock_in():
-    while app_state.is_capturing:
+def capture_lock_in(state: AppState) -> None:
+    while state.is_capturing:
         in_phase, quad = get_lockin_frame(
-            app_state.fequency, app_state.port, app_state.integration, app_state.negate
+            state,
+            state.frequency,
+            state.port,
+            state.integration,
+            state.negate,
         )
-        if in_phase is not None and quad is not None:
-            with app_state.lock:
-                app_state.in_phase_frame = in_phase
-                app_state.quad_frame = quad
+        with state.lock:
+            state.in_phase_frame = in_phase
+            state.quad_frame = quad
 
 
-def start_capture():
-    app_state.is_capturing = True
-    thread = threading.Thread(target=capture_lock_in)
+def start_capture(state: AppState) -> threading.Thread:
+    state.is_capturing = True
+    thread = threading.Thread(target=capture_lock_in, args=(state,), daemon=True)
     thread.start()
     return thread
 
 
-def stop_capture(thread):
-    app_state.is_capturing = False
+def stop_capture(thread: Optional[threading.Thread]) -> None:
     if thread is not None:
-        thread.join()
+        thread.join(timeout=2)
 
 
-def animate_func(_frame: int) -> None:
-    if app_state.lockin and app_state.start_skips > 0:
-        app_state.frame = app_state.camera.get_frame()
-        app_state.start_skips -= 1
-    elif app_state.lockin:
-        if not app_state.is_capturing:
-            app_state.lock_in_thread = start_capture()
-        # in_phase_frame, quad_frame = get_lockin_frame(fequency, port, integration)
-    else:
-        app_state.frame = app_state.camera.get_frame()
+def run_headless(state: AppState) -> None:
+    print("Starting headless mode", flush=True)
 
-    if not app_state.paused:
-        if app_state.diff["enabled"]:
-            show_frame = app_state.frame - app_state.diff["frame"]
+    try:
+        while True:
+            frame = state.camera.get_frame()
+
+            if state.prom_exporter is not None:
+                state.prom_exporter.export(frame, utils.CUSTOM_COORDINATES)
+
+            time.sleep(state.args.interval)
+    finally:
+        cleanup(state)
+
+
+def build_animation_callback(state: AppState):
+    def animate_func(_frame: int):
+        if state.lockin and state.start_skips > 0:
+            state.frame = state.camera.get_frame()
+            state.start_skips -= 1
+        elif state.lockin:
+            if not state.is_capturing:
+                state.lock_in_thread = start_capture(state)
         else:
-            show_frame = app_state.frame
+            state.frame = state.camera.get_frame()
 
-        if app_state.diff["annotation_enabled"]:
-            annotation_frame = app_state.frame - app_state.diff["frame"]
-        else:
-            annotation_frame = app_state.frame
+        if state.paused:
+            return [state.im] + state.annotations.get()
 
-        app_state.im.set_array(show_frame)
-        if app_state.lockin:
-            app_state.im_in_phase.set_array(app_state.in_phase_frame)
-            app_state.im_quadrature.set_array(app_state.quad_frame)
-
-        app_state.annotations.update(
-            app_state.temp_annotations, annotation_frame, app_state.draw_temp
+        show_frame = (
+            state.frame - state.diff.frame if state.diff.enabled else state.frame
+        )
+        annotation_frame = (
+            state.frame - state.diff.frame
+            if state.diff.annotation_enabled
+            else state.frame
         )
 
-        if app_state.exposure["auto"]:
-            app_state.update_colormap = utils.autoExposure(
-                app_state.update_colormap, app_state.exposure, show_frame
+        state.im.set_array(show_frame)
+
+        if state.lockin:
+            state.im_in_phase.set_array(state.in_phase_frame)
+            state.im_quadrature.set_array(state.quad_frame)
+
+        state.annotations.update(
+            state.temp_annotations,
+            annotation_frame,
+            state.draw_temp,
+        )
+
+        if state.exposure.auto:
+            state.update_colormap = utils.autoExposure(
+                state.update_colormap,
+                {
+                    "auto": state.exposure.auto,
+                    "auto_type": state.exposure.auto_type,
+                    "T_min": state.exposure.t_min,
+                    "T_max": state.exposure.t_max,
+                    "T_margin": state.exposure.t_margin,
+                },
+                show_frame,
             )
 
-        # TODO: deal with saving the lock in stuff to a file
-        log_annotations_to_csv(annotation_frame)
+        log_annotations_to_csv(state, annotation_frame)
 
-        if app_state.update_colormap:
-            app_state.im.set_clim(
-                app_state.exposure["T_min"], app_state.exposure["T_max"]
-            )
-            app_state.fig.canvas.draw_idle()  # force update all, even with blit=True
-            app_state.update_colormap = False
+        if state.prom_exporter is not None:
+            state.prom_exporter.export(annotation_frame, utils.CUSTOM_COORDINATES)
+
+        if state.update_colormap:
+            state.im.set_clim(state.exposure.t_min, state.exposure.t_max)
+            state.fig.canvas.draw_idle()
+            state.update_colormap = False
             return []
 
-        # Export temperatures to Prometheus if a Prometheus exporter is
-        # configured (this is automatically enabled when --custom is used).
-        if app_state.prom_exporter is not None:
-            app_state.prom_exporter.export(annotation_frame, utils.CUSTOM_COORDINATES)
-
-        if app_state.lockin:
-            # adjust the color limits for the in-phase and quadrature frames
-            app_state.im_in_phase.set_clim(
-                np.min(app_state.in_phase_frame), np.max(app_state.in_phase_frame)
+        if state.lockin:
+            state.im_in_phase.set_clim(
+                np.min(state.in_phase_frame),
+                np.max(state.in_phase_frame),
             )
-            app_state.im_quadrature.set_clim(
-                np.min(app_state.quad_frame), np.max(app_state.quad_frame)
+            state.im_quadrature.set_clim(
+                np.min(state.quad_frame),
+                np.max(state.quad_frame),
             )
-            new_status_text = getattr(app_state, "status_text", "")
-            app_state.status_text_obj.set_text(new_status_text)
+            state.status_text_obj.set_text(state.status_text)
             return [
-                app_state.im,
-                app_state.im_in_phase,
-                app_state.im_quadrature,
-                app_state.status_text_obj,
-            ] + app_state.annotations.get()
+                state.im,
+                state.im_in_phase,
+                state.im_quadrature,
+                state.status_text_obj,
+            ] + state.annotations.get()
 
-    return [app_state.im] + app_state.annotations.get()
+        return [state.im] + state.annotations.get()
+
+    return animate_func
 
 
-def print_help():
-    print(
-        """keys:
-    'h'      - help
-    'q'      - quit
-    ' '      - pause, resume
-    'd'      - set diff
-    'x','c'  - enable/disable diff, enable/disable annotation diff
-    'f'      - full screen
-    'u'      - calibrate
-    't'      - draw min, max, center temperature
-    'e'      - remove user temperature annotations
-    'w'      - save to file date.png
-    'r'      - save raw data to file date.npy
-    'v'      - record annotations data to file date.csv
-    ',', '.' - change color map
-    'a', 'z' - auto exposure on/off, auto exposure type
-    'k', 'l' - set the thermal range to normal/high (supported by T2S+/T2L)
-    left, right, up, down - set exposure limits
+def run_gui(state: AppState) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib import animation
+    from matplotlib.backend_bases import MouseButton
 
-mouse:
-    left  button - add Region Of Interest (ROI)
-    right button - add user temperature annotation
+    setup_gui(state)
+
+    def print_help() -> None:
+        print(
+            """keys:
+    h        help
+    space    pause / resume
+    d        set diff
+    x        toggle diff
+    c        toggle annotation diff
+    t        toggle temperatures
+    e        remove user annotations
+    u        calibrate
+    w        save image
+    r        save raw frame
+    v        toggle CSV recording
+    , .      change color map
+    a        toggle auto exposure
+    z        change auto exposure mode
+    k l      set temperature range
+    arrows   adjust exposure
 """
-    )
-
-
-FILE_NAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
-
-
-# keyboard
-def press(event):
-    if event.key == "h":
-        print_help()
-    if event.key == " ":
-        app_state.paused ^= True
-        print("paused:", app_state.paused)
-    if event.key == "d":
-        app_state.diff["frame"] = app_state.frame
-        app_state.diff["annotation_enabled"] = app_state.diff["enabled"] = True
-        print("set   diff")
-    if event.key == "x":
-        app_state.diff["enabled"] ^= True
-        print("enable diff:", app_state.diff["enabled"])
-    if event.key == "c":
-        app_state.diff["annotation_enabled"] ^= True
-        print("enable annotation diff:", app_state.diff["annotation_enabled"])
-    if event.key == "t":
-        app_state.draw_temp ^= True
-        print("draw temp:", app_state.draw_temp)
-    if event.key == "e":
-        print("removing user annotations: ", len(app_state.temp_annotations["user"]))
-        app_state.annotations.remove(app_state.temp_annotations["user"])
-    if event.key == "u":
-        print("calibrate")
-        app_state.camera.calibrate()
-    if event.key == "a":
-        app_state.exposure["auto"] ^= True
-        print(
-            "auto exposure:",
-            app_state.exposure["auto"],
-            ", type:",
-            app_state.exposure["auto_type"],
         )
-    if event.key == "z":
-        types = ["center", "ends"]
-        app_state.exposure["auto_type"] = types[
-            types.index(app_state.exposure["auto_type"]) - 1
-        ]
-        print(
-            "auto exposure:",
-            app_state.exposure["auto"],
-            ", type:",
-            app_state.exposure["auto_type"],
-        )
-    if event.key == "w":
-        filename = time.strftime(FILE_NAME_FORMAT) + ".png"
-        plt.savefig(filename)
-        print("saved to:", filename)
-    if event.key == "r":
-        filename = time.strftime(FILE_NAME_FORMAT) + ".npy"
-        np.save(
-            filename,
-            app_state.camera.frame_raw_u16.reshape(
-                app_state.camera.height + 4, app_state.camera.width
-            ),
-        )
-        print("saved to:", filename)
-    if event.key == "v":
-        if app_state.csv_filename is None:
-            csv_filename = time.strftime(FILE_NAME_FORMAT) + ".csv"
-            with open(csv_filename, "w", newline="") as f:
-                header = ["time"]
-                header += [
-                    f"{a} {x}"
-                    for a in app_state.temp_annotations["std"]
-                    for x in ["x", "y", "val"]
-                ]  # t, tmin x, tmin y, tmin val, etc
-                header += [
-                    f"Point{i} {x}"
-                    for i, key in enumerate(app_state.temp_annotations["user"].keys())
-                    for x in ["x", "y", "val"]
-                ]
-                csv.writer(f).writerow(header)
-            print("Annotation recording started in:", csv_filename)
-        else:
-            print("Annotation recording  saved  in:", csv_filename)
-            csv_filename = None
 
-    if event.key in [",", "."]:
-        if event.key == ".":
-            app_state.cmaps_idx = (app_state.cmaps_idx + 1) % len(CMAP_NAMES)
-        else:
-            app_state.cmaps_idx = (app_state.cmaps_idx - 1) % len(CMAP_NAMES)
-        print("color map:", CMAP_NAMES[app_state.cmaps_idx])
-        app_state.im.set_cmap(CMAP_NAMES[app_state.cmaps_idx])
-        app_state.update_colormap = True
-    if event.key in ["k", "l"]:
-        if event.key == "k":
-            app_state.camera.temperature_range_normal()
-        else:
-            app_state.camera.temperature_range_high()
-        # this takes care of calibration as well
-        app_state.camera.wait_for_range_application()
-        app_state.update_colormap = True
-    if event.key in ["left", "right", "up", "down"]:
-        app_state.exposure["auto"] = False
-        t_cent = int((app_state.exposure["T_min"] + app_state.exposure["T_max"]) / 2)
-        d = int(app_state.exposure["T_max"] - t_cent)
-        if event.key == "up":
-            t_cent += app_state.exposure["T_margin"] / 2
-        if event.key == "down":
-            t_cent -= app_state.exposure["T_margin"] / 2
-        if event.key == "left":
-            d -= app_state.exposure["T_margin"] / 2
-        if event.key == "right":
-            d += app_state.exposure["T_margin"] / 2
-        d = max(d, app_state.exposure["T_margin"])
-        app_state.exposure["T_min"] = t_cent - d
-        app_state.exposure["T_max"] = t_cent + d
-        print(
-            "auto exposure off, T_min:",
-            app_state.exposure["T_min"],
-            "T_cent:",
-            t_cent,
-            "T_max:",
-            app_state.exposure["T_max"],
-        )
-        app_state.update_colormap = True
+    def press(event) -> None:
+        if event.key == "h":
+            print_help()
+        elif event.key == " ":
+            state.paused = not state.paused
+            print("paused:", state.paused)
+        elif event.key == "d":
+            state.diff.frame = state.frame.copy()
+            state.diff.enabled = True
+            state.diff.annotation_enabled = True
+        elif event.key == "x":
+            state.diff.enabled = not state.diff.enabled
+        elif event.key == "c":
+            state.diff.annotation_enabled = not state.diff.annotation_enabled
+        elif event.key == "t":
+            state.draw_temp = not state.draw_temp
+        elif event.key == "e" and state.annotations is not None:
+            state.annotations.remove(state.temp_annotations["user"])
+        elif event.key == "u":
+            state.camera.calibrate()
+        elif event.key == "a":
+            state.exposure.auto = not state.exposure.auto
+        elif event.key == "z":
+            state.exposure.auto_type = (
+                "center" if state.exposure.auto_type == "ends" else "ends"
+            )
+        elif event.key == "w":
+            filename = time.strftime(FILE_NAME_FORMAT) + ".png"
+            plt.savefig(filename)
+            print("saved:", filename)
+        elif event.key == "r":
+            filename = time.strftime(FILE_NAME_FORMAT) + ".npy"
+            np.save(
+                filename,
+                state.camera.frame_raw_u16.reshape(
+                    state.camera.height + 4,
+                    state.camera.width,
+                ),
+            )
+            print("saved:", filename)
 
+    def onclick(event) -> None:
+        if event.inaxes != state.ax:
+            return
 
-def onclick(event):
-    if event.inaxes == app_state.ax:
         pos = (int(event.xdata), int(event.ydata))
+
         if event.button == MouseButton.RIGHT:
-            print("add user temperature annotation at pos:", pos)
-            app_state.temp_annotations["user"][pos] = "white"
-        if event.button == MouseButton.LEFT:
-            if utils.inRoi(app_state.annotations.roi, pos, app_state.frame.shape):
-                app_state.mouse_action = "move_roi"
-                app_state.mouse_action_pos = (
-                    app_state.annotations.roi[0][0] - pos[0],
-                    app_state.annotations.roi[0][1] - pos[1],
+            state.temp_annotations["user"][pos] = "white"
+        elif event.button == MouseButton.LEFT:
+            if utils.inRoi(state.annotations.roi, pos, state.frame.shape):
+                state.mouse_action = "move_roi"
+                state.mouse_action_pos = (
+                    state.annotations.roi[0][0] - pos[0],
+                    state.annotations.roi[0][1] - pos[1],
                 )
             else:
-                app_state.mouse_action = "create_roi"
-                app_state.mouse_action_pos = pos
-                app_state.annotations.set_roi((pos, (0, 0)))
+                state.mouse_action = "create_roi"
+                state.mouse_action_pos = pos
+                state.annotations.set_roi((pos, (0, 0)))
 
+    def onmotion(event) -> None:
+        if event.inaxes != state.ax or event.button != MouseButton.LEFT:
+            return
 
-def onmotion(event):
-    if event.inaxes == app_state.ax and event.button == MouseButton.LEFT:
         pos = (int(event.xdata), int(event.ydata))
-        if app_state.mouse_action == "create_roi":
-            w, h = (
-                pos[0] - app_state.mouse_action_pos[0],
-                pos[1] - app_state.mouse_action_pos[1],
-            )
-            app_state.roi = (app_state.mouse_action_pos, (w, h))
-            app_state.annotations.set_roi(app_state.roi)
-        if app_state.mouse_action == "move_roi":
-            app_state.roi = (
+
+        if state.mouse_action == "create_roi":
+            w = pos[0] - state.mouse_action_pos[0]
+            h = pos[1] - state.mouse_action_pos[1]
+            state.roi = (state.mouse_action_pos, (w, h))
+            state.annotations.set_roi(state.roi)
+        elif state.mouse_action == "move_roi":
+            state.roi = (
                 (
-                    pos[0] + app_state.mouse_action_pos[0],
-                    pos[1] + app_state.mouse_action_pos[1],
+                    pos[0] + state.mouse_action_pos[0],
+                    pos[1] + state.mouse_action_pos[1],
                 ),
-                app_state.annotations.roi[1],
+                state.annotations.roi[1],
             )
-            app_state.annotations.set_roi(app_state.roi)
+            state.annotations.set_roi(state.roi)
 
-
-def main() -> None:
-    animation.FuncAnimation(
-        app_state.fig,
-        animate_func,
-        interval=1000 / app_state.fps,
+    anim = animation.FuncAnimation(
+        state.fig,
+        build_animation_callback(state),
+        interval=1000 / state.fps,
         blit=True,
         cache_frame_data=False,
     )
-    app_state.fig.canvas.mpl_connect("button_press_event", onclick)
-    app_state.fig.canvas.mpl_connect("motion_notify_event", onmotion)
-    app_state.fig.canvas.mpl_connect("key_press_event", press)
+
+    state.fig.canvas.mpl_connect("button_press_event", onclick)
+    state.fig.canvas.mpl_connect("motion_notify_event", onmotion)
+    state.fig.canvas.mpl_connect("key_press_event", press)
 
     print_help()
-    while True:
-        try:
-            plt.pause(1)
-        except Exception as exc:
-            print(f"Error in main loop: {exc}")
-            break
-    stop_capture(app_state.lock_in_thread)
-    app_state.camera.release()
+
+    try:
+        plt.show()
+    finally:
+        _ = anim
+        cleanup(state)
+
+
+def main() -> None:
+    state = create_app_state(parse_arguments())
+
+    if state.headless:
+        run_headless(state)
+        return
+
+    run_gui(state)
 
 
 if __name__ == "__main__":

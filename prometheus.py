@@ -1,4 +1,3 @@
-from time import time
 import numpy as np
 from prometheus_client import Gauge, start_http_server
 
@@ -12,10 +11,8 @@ class PrometheusExporter:
       - temp_ultra_{1..5}
     """
 
-    def __init__(self, port: int = 8000, interval_sec: float = 15.0) -> None:
+    def __init__(self, port: int = 8000) -> None:
         self.enabled = False
-        self.interval_sec = float(interval_sec)
-        self.last_push = time()
         self.metrics = None
 
         start_http_server(port=port)
@@ -49,9 +46,6 @@ class PrometheusExporter:
         if not self.enabled or self.metrics is None:
             return
 
-        now = time()
-        if (now - self.last_push) < self.interval_sec:
-            return
         h, w = frame.shape
 
         for idx, (x, y) in enumerate(coords):
@@ -68,5 +62,3 @@ class PrometheusExporter:
                 self.metrics["ind"].labels(slot=str(slot)).set(temp_val)
             else:
                 self.metrics["ultra"].labels(slot=str(slot)).set(temp_val)
-
-        self.last_push = now
