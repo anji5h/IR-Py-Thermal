@@ -37,7 +37,9 @@ class PrometheusExporter:
             return
 
         for idx, (x, y) in enumerate(cordinates):
-            temp_val = float(frame[y, x])
+            x_cord = max(0, min(x, frame.shape[1] - 1))
+            y_cord = max(0, min(y, frame.shape[0] - 1))
+            temp_val = float(frame[y_cord, x_cord])
             group_idx = idx // 5
             slot = str((idx % 5) + 1)
 
