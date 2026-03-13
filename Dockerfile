@@ -22,4 +22,4 @@ COPY pyproject.toml poetry.lock* README.md ./
 RUN poetry check && poetry install --no-root --only main
 
 COPY . .
-CMD ["python", "pyplot.py", "-r", "-c", "-o", "8.5"]
+CMD ["python", "pyplot.py", "-r", "-c", "-o", "8.5", "--headless", "--interval", "5.0"]
