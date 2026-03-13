@@ -10,23 +10,23 @@ import numpy as np
 # Custom coordinates (x, y) in thermal-frame pixel space.
 CUSTOM_COORDINATES: list[tuple[int, int]] = [
     # high endurance SD cards
-    (34, 57),
-    (36, 78),
-    (38, 96),
-    (40, 111),
-    (43, 125),
+    (43, 125),  # pi-hiend-1
+    (40, 111),  # pi-hiend-2
+    (38, 96),  # pi-hiend-3
+    (36, 78),  # pi-hiend-4
+    (34, 57),  # pi-hiend-5
     # industrial SD cards
-    (142, 51),
-    (139, 72),
-    (136, 90),
-    (134, 106),
-    (132, 120),
+    (132, 120),  # pi-ind-1
+    (134, 106),  # pi-ind-2
+    (136, 90),  # pi-ind-3
+    (139, 72),  # pi-ind-4
+    (142, 51),  # pi-ind-5
     # ultra SD cards
-    (234, 60),
-    (226, 79),
-    (219, 95),
-    (213, 110),
-    (207, 123),
+    (207, 123),  # pi-ultra-1
+    (213, 110),  # pi-ultra-2
+    (219, 95),  # pi-ultra-3
+    (226, 79),  # pi-ultra-4
+    (234, 60),  # pi-ultra-5
 ]
 
 
