@@ -37,7 +37,7 @@ class PrometheusExporter:
 
         self.enabled = True
 
-    def export(self, frame: np.ndarray, coords: list[tuple[int, int]]) -> None:
+    def export(self, values: list[float]) -> None:
         """Export temperatures from `frame` at given coords to Prometheus.
 
         - `frame` must be a 2D numpy array of temperatures (e.g. °C).
@@ -46,19 +46,13 @@ class PrometheusExporter:
         if not self.enabled or self.metrics is None:
             return
 
-        h, w = frame.shape
-
-        for idx, (x, y) in enumerate(coords):
-            xi = max(0, min(int(round(x)), w - 1))
-            yi = max(0, min(int(round(y)), h - 1))
-            temp_val = float(frame[yi, xi])
-
+        for idx, temp_val in enumerate(values[:15]):
             group_idx = idx // 5
-            slot = (idx % 5) + 1
+            slot = str((idx % 5) + 1)
 
             if group_idx == 0:
-                self.metrics["hend"].labels(slot=str(slot)).set(temp_val)
+                self.metrics["hend"].labels(slot=slot).set(temp_val)
             elif group_idx == 1:
-                self.metrics["ind"].labels(slot=str(slot)).set(temp_val)
-            else:
-                self.metrics["ultra"].labels(slot=str(slot)).set(temp_val)
+                self.metrics["ind"].labels(slot=slot).set(temp_val)
+            elif group_idx == 2:
+                self.metrics["ultra"].labels(slot=slot).set(temp_val)

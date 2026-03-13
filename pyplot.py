@@ -419,11 +419,11 @@ def run_headless(state: AppState) -> None:
 
     try:
         while True:
-            frame = state.camera.get_frame()
-
-            if state.prom_exporter is not None:
-                state.prom_exporter.export(frame, utils.CUSTOM_COORDINATES)
-
+            state.camera.set_custom_coords(tuple(utils.CUSTOM_COORDINATES))
+            temps = state.camera.get_temperatures_at(tuple(utils.CUSTOM_COORDINATES))
+            state.prom_exporter.export(
+                [temps[c] for c in utils.CUSTOM_COORDINATES if c in temps]
+            )
             time.sleep(state.args.interval)
     finally:
         cleanup(state)
