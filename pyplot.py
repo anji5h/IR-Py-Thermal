@@ -612,7 +612,9 @@ def main() -> None:
     state = create_app_state(parse_arguments())
 
     if state.headless:
-        return
+        while True:
+            state.frame = state.camera.get_frame()
+            time.sleep(1)
 
     run_gui(state)
 
