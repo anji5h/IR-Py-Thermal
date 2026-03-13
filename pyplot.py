@@ -15,7 +15,6 @@ import numpy as np
 import serial
 
 import irpythermal
-from prometheus import PrometheusExporter
 import utils
 
 
@@ -73,24 +72,12 @@ def parse_arguments() -> argparse.Namespace:
         "-c",
         "--custom",
         action="store_true",
-        help="Use predefined custom coordinates and export them to Prometheus",
+        help="Use predefined custom coordinates",
     )
     parser.add_argument(
         "--headless",
         action="store_true",
         help="Run without GUI and only export metrics / process frames",
-    )
-    parser.add_argument(
-        "--prometheus-port",
-        type=int,
-        default=8000,
-        help="Port for Prometheus metrics endpoint",
-    )
-    parser.add_argument(
-        "--interval",
-        type=float,
-        default=5.0,
-        help="Frame polling interval in headless mode, seconds",
     )
     parser.add_argument(
         "file",
@@ -146,7 +133,6 @@ class AppState:
     lock: threading.Lock = field(default_factory=threading.Lock)
     lock_in_thread: Optional[threading.Thread] = None
 
-    prom_exporter: Optional[PrometheusExporter] = None
     temp_annotations: dict = field(default_factory=dict)
     csv_filename: Optional[str] = None
 
@@ -212,8 +198,6 @@ def create_app_state(args: argparse.Namespace) -> AppState:
         state.temp_annotations = {"std": {}, "user": {}}
         for coord in utils.CUSTOM_COORDINATES:
             state.temp_annotations["user"][coord] = "white"
-
-        state.prom_exporter = PrometheusExporter(port=args.prometheus_port)
     else:
         state.temp_annotations = {
             "std": {"Tmin": "lightblue", "Tmax": "red", "Tcenter": "yellow"},
@@ -414,21 +398,6 @@ def stop_capture(thread: Optional[threading.Thread]) -> None:
         thread.join(timeout=2)
 
 
-def run_headless(state: AppState) -> None:
-    print("Starting headless mode", flush=True)
-
-    try:
-        while True:
-            state.camera.set_custom_coords(tuple(utils.CUSTOM_COORDINATES))
-            temps = state.camera.get_temperatures_at(tuple(utils.CUSTOM_COORDINATES))
-            state.prom_exporter.export(
-                [temps[c] for c in utils.CUSTOM_COORDINATES if c in temps]
-            )
-            time.sleep(state.args.interval)
-    finally:
-        cleanup(state)
-
-
 def build_animation_callback(state: AppState):
     def animate_func(_frame: int):
         if state.lockin and state.start_skips > 0:
@@ -478,9 +447,6 @@ def build_animation_callback(state: AppState):
             )
 
         log_annotations_to_csv(state, annotation_frame)
-
-        if state.prom_exporter is not None:
-            state.prom_exporter.export(annotation_frame, utils.CUSTOM_COORDINATES)
 
         if state.update_colormap:
             state.im.set_clim(state.exposure.t_min, state.exposure.t_max)
@@ -646,7 +612,6 @@ def main() -> None:
     state = create_app_state(parse_arguments())
 
     if state.headless:
-        run_headless(state)
         return
 
     run_gui(state)

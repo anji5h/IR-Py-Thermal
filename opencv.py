@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from prometheus import PrometheusExporter
 from skimage.exposure import equalize_hist, rescale_intensity
 
 import irpythermal
@@ -161,7 +162,8 @@ def draw_custom_temperatures(
     camera_height: int,
     upscale_factor: int,
     orientation: int,
-) -> None:
+) -> list[float]:
+    temp_values = []
     i = 1
     while True:
         point_key = f"coord_{i}_point"
@@ -180,7 +182,10 @@ def draw_custom_temperatures(
             upscale_factor=upscale_factor,
             orientation=orientation,
         )
+        temp_values.append(info[temp_key])
         i += 1
+
+    return temp_values
 
 
 def draw_default_temperatures(
@@ -302,10 +307,12 @@ def main() -> None:
     )
 
     camera = irpythermal.Camera()
+    prom_exporter = None
 
     use_custom_coords = bool(args.custom and utils.CUSTOM_COORDINATES)
     if use_custom_coords:
         camera.set_custom_coords(tuple(utils.CUSTOM_COORDINATES))
+        prom_exporter = PrometheusExporter(port=8000)
 
     window_name = f"{WINDOW_NAME} - {type(camera).__name__}"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -315,7 +322,7 @@ def main() -> None:
             ret, frame_raw = camera.read()
             if not ret:
                 print("Failed to read frame")
-                continue
+                break
 
             fps_counter.update()
             info, _ = camera.info()
@@ -326,7 +333,7 @@ def main() -> None:
 
             if state.draw_temp:
                 if use_custom_coords:
-                    draw_custom_temperatures(
+                    temp_values = draw_custom_temperatures(
                         frame=frame,
                         info=info,
                         camera_width=camera.width,
@@ -334,6 +341,7 @@ def main() -> None:
                         upscale_factor=state.upscale_factor,
                         orientation=state.orientation,
                     )
+                    prom_exporter.export(values=temp_values)
                 else:
                     draw_default_temperatures(
                         frame=frame,
@@ -358,6 +366,8 @@ def main() -> None:
             )
             if not should_continue:
                 break
+
+        time.sleep(5)
 
     finally:
         camera.release()
