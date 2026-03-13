@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
+from typing import Any
+
 import cv2
 import numpy as np
 
-# List of custom coordinates (x, y) in pixel space for the thermal frame.
-# You can add or remove points here; any number of coordinates is supported.
-CUSTOM_COORDINATES = [
-    # high endurnance sd cards
+# Custom coordinates (x, y) in thermal-frame pixel space.
+CUSTOM_COORDINATES: list[tuple[int, int]] = [
+    # high endurance SD cards
     (34, 57),
     (36, 78),
     (38, 96),
     (40, 111),
     (43, 125),
-    # industrial sd cards
+    # industrial SD cards
     (142, 51),
     (139, 72),
     (136, 90),
     (134, 106),
     (132, 120),
-    # ultra sd cards
+    # ultra SD cards
     (234, 60),
     (226, 79),
     (219, 95),
@@ -27,81 +30,138 @@ CUSTOM_COORDINATES = [
 ]
 
 
-def drawTemperature(img, point, T, color=(0, 0, 0)):
-    d1, d2 = 2, 5
-    dsize = 1
+def draw_temperature(
+    img: np.ndarray,
+    point: tuple[int, int],
+    temperature_c: float,
+    color: tuple[int, int, int] = (0, 0, 0),
+) -> None:
+    """Draw a crosshair and temperature label at a point."""
+    cross_inner = 2
+    cross_outer = 5
+    thickness = 1
     font = cv2.FONT_HERSHEY_PLAIN
-    (x, y) = point
-    t = "%.2fC" % T
-    cv2.line(img, (x + d1, y), (x + d2, y), color, dsize)
-    cv2.line(img, (x - d1, y), (x - d2, y), color, dsize)
-    cv2.line(img, (x, y + d1), (x, y + d2), color, dsize)
-    cv2.line(img, (x, y - d1), (x, y - d2), color, dsize)
 
-    text_size = cv2.getTextSize(t, font, 1, dsize)[0]
-    tx, ty = x + d1, y + d1 + text_size[1]
-    if tx + text_size[0] > img.shape[1]:
-        tx = x - d1 - text_size[0]
-    if ty > img.shape[0]:
-        ty = y - d1
+    x, y = point
+    label = f"{temperature_c:.2f}C"
 
-    cv2.putText(img, t, (tx, ty), font, 1, color, dsize, cv2.LINE_8)
+    cv2.line(img, (x + cross_inner, y), (x + cross_outer, y), color, thickness)
+    cv2.line(img, (x - cross_inner, y), (x - cross_outer, y), color, thickness)
+    cv2.line(img, (x, y + cross_inner), (x, y + cross_outer), color, thickness)
+    cv2.line(img, (x, y - cross_inner), (x, y - cross_outer), color, thickness)
+
+    text_size = cv2.getTextSize(label, font, 1, thickness)[0]
+    text_x = x + cross_inner
+    text_y = y + cross_inner + text_size[1]
+
+    if text_x + text_size[0] > img.shape[1]:
+        text_x = x - cross_inner - text_size[0]
+    if text_y > img.shape[0]:
+        text_y = y - cross_inner
+
+    cv2.putText(
+        img,
+        label,
+        (text_x, text_y),
+        font,
+        1,
+        color,
+        thickness,
+        cv2.LINE_8,
+    )
 
 
-def autoExposure(update, exposure, frame):
-    # Sketchy auto-exposure
-    lmin, lmax = frame.min(), frame.max()
-    T_min, T_max, T_margin = exposure["T_min"], exposure["T_max"], exposure["T_margin"]
-    if exposure["auto_type"] == "center":
-        T_cent = int((T_min + T_max) / 2)
-        d = int(max(T_cent - lmin, lmax - T_cent, 0) + T_margin)
+# Backward-compatible alias
+drawTemperature = draw_temperature
+
+
+def auto_exposure(update: bool, exposure: dict[str, Any], frame: np.ndarray) -> bool:
+    """Adjust exposure limits in-place based on current frame values."""
+    frame_min = float(frame.min())
+    frame_max = float(frame.max())
+
+    temp_min = float(exposure["T_min"])
+    temp_max = float(exposure["T_max"])
+    temp_margin = float(exposure["T_margin"])
+    auto_type = exposure["auto_type"]
+
+    if auto_type == "center":
+        temp_center = (temp_min + temp_max) / 2.0
+        delta = max(temp_center - frame_min, frame_max - temp_center, 0.0) + temp_margin
+
         if (
-            lmin < T_min
-            or T_max < lmax
-            or (T_min + 2 * T_margin < lmin and T_max - 2 * T_margin > lmax)
+            frame_min < temp_min
+            or temp_max < frame_max
+            or (
+                temp_min + 2 * temp_margin < frame_min
+                and temp_max - 2 * temp_margin > frame_max
+            )
         ):
-            #            print('d:',d, 'lmin:', lmin, 'lmax:', lmax)
             update = True
-            T_min, T_max = T_cent - d, T_cent + d
-    #            print('T_min:', T_min, 'T_cent:', T_cent, 'T_max:', T_max)
-    if exposure["auto_type"] == "ends":
-        if T_min > lmin:
-            update, T_min = True, lmin - T_margin
-        if T_min + 2 * T_margin < lmin:
-            update, T_min = True, lmin - T_margin
-        if T_max < lmax:
-            update, T_max = True, lmax + T_margin
-        if T_max - 2 * T_margin > lmax:
-            update, T_max = True, lmax + T_margin
+            temp_min = temp_center - delta
+            temp_max = temp_center + delta
 
-    exposure["T_min"] = T_min
-    exposure["T_max"] = T_max
+    elif auto_type == "ends":
+        if temp_min > frame_min or temp_min + 2 * temp_margin < frame_min:
+            update = True
+            temp_min = frame_min - temp_margin
+
+        if temp_max < frame_max or temp_max - 2 * temp_margin > frame_max:
+            update = True
+            temp_max = frame_max + temp_margin
+
+    exposure["T_min"] = temp_min
+    exposure["T_max"] = temp_max
     return update
 
 
-def correctRoi(roi, shape):
-    ((x, y), (w, h)) = roi
-    #    if w == 0 and h == 0:
-    #        ((x,y),(w,h)) = ((0,0), shape)
-    x1, x2 = max(0, min(x, x + w)), max(0, x, x + w)
-    y1, y2 = max(0, min(y, y + h)), max(0, y, y + h)
-    #    if x1 == x2: x2 += 1
-    #    if y1 == y2: y2 += 1
-    return ((x1, y1), (x2, y2))
+# Backward-compatible alias
+autoExposure = auto_exposure
 
 
-def inRoi(roi, point, shape):
-    result = False
-    ((x1, y1), (x2, y2)) = correctRoi(roi, shape)
-    if x1 < point[0] and point[0] < x2:
-        if y1 < point[1] and point[1] < y2:
-            result = True
-    return result
+def correct_roi(
+    roi: tuple[tuple[int, int], tuple[int, int]],
+    shape: tuple[int, ...],
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Normalize ROI into top-left and bottom-right coordinates."""
+    (x, y), (w, h) = roi
+    height, width = shape[:2]
+
+    x1 = max(0, min(x, x + w))
+    y1 = max(0, min(y, y + h))
+    x2 = min(width, max(x, x + w))
+    y2 = min(height, max(y, y + h))
+
+    return (x1, y1), (x2, y2)
+
+
+# Backward-compatible alias
+correctRoi = correct_roi
+
+
+def in_roi(
+    roi: tuple[tuple[int, int], tuple[int, int]],
+    point: tuple[int, int],
+    shape: tuple[int, ...],
+) -> bool:
+    """Return True if point lies inside ROI."""
+    (x1, y1), (x2, y2) = correct_roi(roi, shape)
+    px, py = point
+    return x1 < px < x2 and y1 < py < y2
+
+
+# Backward-compatible alias
+inRoi = in_roi
 
 
 class Annotations:
-    def __init__(self, ax, patches):
+    """Manage matplotlib annotations and ROI overlay for thermal frames."""
+
+    def __init__(self, ax: Any, patches: Any) -> None:
         self.ax = ax
+        self.anns: dict[Any, Any] = {}
+        self.roi = ((0, 0), (0, 0))
+
         self.astyle = dict(
             text="",
             xy=(0, 0),
@@ -109,89 +169,124 @@ class Annotations:
             textcoords="offset pixels",
             arrowprops=dict(facecolor="black", arrowstyle="->"),
         )
-        self.anns = {}
+
         self.roi_patch = ax.add_patch(
             patches.Rectangle(
-                (0, 0), 0, 0, linewidth=1, edgecolor="black", facecolor="none"
+                (0, 0),
+                0,
+                0,
+                linewidth=1,
+                edgecolor="black",
+                facecolor="none",
             )
         )
-        self.set_roi(((0, 0), (0, 0)))
+        self.set_roi(self.roi)
 
-    def set_roi(self, roi):
+    def set_roi(self, roi: tuple[tuple[int, int], tuple[int, int]]) -> None:
         self.roi = roi
-        ((x, y), (w, h)) = roi
+        (x, y), (w, h) = roi
         self.roi_patch.xy = (x, y)
         self.roi_patch.set_width(w)
         self.roi_patch.set_height(h)
         self.roi_patch.set_visible(w != 0 and h != 0)
 
-    def get_ann(self, name, color):
+    def get_ann(self, name: Any, color: str) -> Any:
         if name not in self.anns:
             self.anns[name] = self.ax.annotate(
-                **self.astyle, bbox=dict(boxstyle="square", fc=color, alpha=0.3, lw=0)
+                **self.astyle,
+                bbox=dict(boxstyle="square", fc=color, alpha=0.3, lw=0),
             )
         return self.anns[name]
 
-    def get_pos(self, name):
+    def get_pos(self, name: Any) -> tuple[int, int]:
         pos = self.get_ann(name, "").xy
-        return pos
+        return int(pos[0]), int(pos[1])
 
-    def get_val(self, name, annotation_frame):
-        annotation_pos = self.get_pos(name)
-        val = annotation_frame[annotation_pos[::-1]]
-        return val
+    def get_val(self, name: Any, annotation_frame: np.ndarray) -> float:
+        x, y = self.get_pos(name)
+        x = max(0, min(x, annotation_frame.shape[1] - 1))
+        y = max(0, min(y, annotation_frame.shape[0] - 1))
+        return float(annotation_frame[y, x])
 
-    def update(self, temp_annotations, annotation_frame, draw_temp):
-        for name, color in (
-            temp_annotations["std"].items() | temp_annotations["user"].items()
-        ):
+    def update(
+        self,
+        temp_annotations: dict[str, dict[Any, str]],
+        annotation_frame: np.ndarray,
+        draw_temp: bool,
+    ) -> None:
+        for name, color in temp_annotations["std"].items():
             pos = self._get_pos(name, annotation_frame, self.roi)
-            self._ann_set_temp(
+            self._set_annotation(
                 self.get_ann(name, color), pos, annotation_frame, draw_temp
             )
 
-    def get(self):
+        for name, color in temp_annotations["user"].items():
+            pos = self._get_pos(name, annotation_frame, self.roi)
+            self._set_annotation(
+                self.get_ann(name, color), pos, annotation_frame, draw_temp
+            )
+
+    def get(self) -> list[Any]:
         return list(self.anns.values()) + [self.roi_patch]
 
-    def remove(self, d):
-        for name in d:
+    def remove(self, annotations_dict: dict[Any, Any]) -> None:
+        for name in list(annotations_dict.keys()):
             if name in self.anns:
                 self.anns[name].remove()
                 del self.anns[name]
-        d.clear()
+        annotations_dict.clear()
 
-    def _ann_set_temp(self, ann, pos, annotation_frame, draw_temp):
-        # Ensure integer, in-bounds coordinates before indexing into the frame.
+    def _set_annotation(
+        self,
+        ann: Any,
+        pos: tuple[int, int],
+        annotation_frame: np.ndarray,
+        draw_temp: bool,
+    ) -> None:
         x = int(round(pos[0]))
         y = int(round(pos[1]))
+
         x = max(0, min(x, annotation_frame.shape[1] - 1))
         y = max(0, min(y, annotation_frame.shape[0] - 1))
 
         ann.xy = (x, y)
-        value = annotation_frame[y, x]
-        ann.set_text("%.2f$^\circ$C" % value)
+        value = float(annotation_frame[y, x])
+        ann.set_text(f"{value:.2f}$^\\circ$C")
         ann.set_visible(draw_temp)
-        tx, ty = 20, 15
-        if x > annotation_frame.shape[1] - 50:
-            tx = -80
-        if y < 30:
-            ty = -15
-        ann.xyann = (tx, ty)
 
-    def _get_pos(self, name, annotation_frame, roi):
-        ((x1, y1), (x2, y2)) = correctRoi(roi, annotation_frame.shape)
+        text_offset_x = 20
+        text_offset_y = 15
+
+        if x > annotation_frame.shape[1] - 50:
+            text_offset_x = -80
+        if y < 30:
+            text_offset_y = -15
+
+        ann.xyann = (text_offset_x, text_offset_y)
+
+    def _get_pos(
+        self,
+        name: Any,
+        annotation_frame: np.ndarray,
+        roi: tuple[tuple[int, int], tuple[int, int]],
+    ) -> tuple[int, int]:
+        (x1, y1), (x2, y2) = correct_roi(roi, annotation_frame.shape)
         roi_frame = annotation_frame[y1:y2, x1:x2]
-        if roi_frame.size <= 0:
+
+        if roi_frame.size == 0:
             x1, y1 = 0, 0
             roi_frame = annotation_frame
+
         if name == "Tmin":
-            pos = np.unravel_index(roi_frame.argmin(), roi_frame.shape)
-            pos = (pos[1] + x1, pos[0] + y1)
-        elif name == "Tmax":
-            pos = np.unravel_index(roi_frame.argmax(), roi_frame.shape)
-            pos = (pos[1] + x1, pos[0] + y1)
-        elif name == "Tcenter":
-            pos = (annotation_frame.shape[1] // 2, annotation_frame.shape[0] // 2)
-        else:
-            pos = name
-        return pos
+            pos = np.unravel_index(np.argmin(roi_frame), roi_frame.shape)
+            return int(pos[1] + x1), int(pos[0] + y1)
+
+        if name == "Tmax":
+            pos = np.unravel_index(np.argmax(roi_frame), roi_frame.shape)
+            return int(pos[1] + x1), int(pos[0] + y1)
+
+        if name == "Tcenter":
+            return annotation_frame.shape[1] // 2, annotation_frame.shape[0] // 2
+
+        # user annotation names are expected to be (x, y) tuples
+        return int(name[0]), int(name[1])
