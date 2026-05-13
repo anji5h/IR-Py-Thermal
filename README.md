@@ -12,6 +12,40 @@ or pure `opencv` - much faster but without most features
 
 Upon startup the app automatically looks for supported cameras by matching the resolutions.
 
+## Installation
+
+### Using Poetry
+
+This project uses [Poetry](https://python-poetry.org/) for dependency management. To install dependencies:
+
+```bash
+# Install Poetry if you don't have it
+curl -sSL https://install.python-poetry.org | python3 -
+
+# Install all dependencies
+poetry install
+
+# Run the program
+poetry run python pyplot.py
+```
+
+To add new dependencies:
+```bash
+poetry add package_name
+```
+
+To add development dependencies:
+```bash
+poetry add --group dev package_name
+```
+
+### Manual Installation
+
+If you prefer not to use Poetry, install dependencies directly:
+```bash
+pip install opencv-python matplotlib pyserial prometheus-client
+```
+
 Running `python ./pyplot.py` will start the camera stream and show the controls below:
 ```
 keys:
@@ -43,6 +77,44 @@ While the program is running you can use these controls in the camera view to co
 You can specify the video device directly with `-d` to the startup command to skip the search routine.
 
 Also for T2S+ V2 users (and potentially for others, where the camera sends raw data and doesn't do onboard processing resulting in the image looking like a pixelated mess) you can specify the `-r` option to tell the program to treat the camera stream as raw sensor data. This will perform a few calibration routines and present you with a usable image doing the sensor processing in python. There is also the `-o` parameter which adds an offset to the entire frames temperature values. This is useful for calibrating the camera since the raw mode sometimes ends up with a constant offset to the image, but this is specific to the camera and thus can be found once and then used for subsequent runs.
+
+### Custom Coordinates Mode
+
+The `-c` / `--custom` flag enables custom coordinates mode, which monitors predefined points on the thermal image and exports their temperature values via Prometheus metrics. This is useful for monitoring specific areas of interest without GUI interaction.
+
+When enabled:
+- Pre-defined coordinates are monitored from `utils.CUSTOM_COORDINATES` (currently 15 SD card monitoring points)
+- A Prometheus exporter runs on port 8000 to expose temperature metrics
+- Metrics are exported every 5 seconds in headless mode
+- Works with all other options (device selection, raw mode, offset, etc.)
+
+Example with custom coordinates:
+```
+python ./pyplot.py -c -d /dev/video14 -r -o -12.3
+```
+
+To modify the monitored coordinates, edit `CUSTOM_COORDINATES` in `utils.py`.
+
+### Headless Mode
+
+The `--headless` flag runs the program without a GUI, processing frames and exporting metrics. This mode is ideal for:
+- Automated monitoring and logging
+- Server/container deployments
+- Integration with monitoring systems (Prometheus, etc.)
+- Running without display hardware
+
+When combined with `-c` (custom coordinates), the program:
+- Continuously reads frames from the camera
+- Exports temperature values for all custom coordinates
+- Runs indefinitely (use Ctrl+C to stop)
+- Requires a Prometheus exporter (automatically started with `-c`)
+
+Example headless mode with custom coordinates:
+```
+python ./pyplot.py --headless -c -d /dev/video14 -r -o -12.3
+```
+
+The metrics are available at `http://localhost:8000/metrics`.
 
 ### Examples
 
