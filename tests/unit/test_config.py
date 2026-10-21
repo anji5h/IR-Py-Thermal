@@ -29,6 +29,7 @@ def test_loads_minimal_config(tmp_path: Path) -> None:
     assert len(settings.cameras) == 1
     assert settings.cameras[0].id == "cam-a"
     assert settings.cameras[0].raw_mode is False
+    assert settings.cameras[0].calibration_file == Path(".temp/calibration/cam-a.npz")
 
 
 def test_shipped_example_config_is_valid() -> None:

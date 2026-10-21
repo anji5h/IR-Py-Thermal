@@ -47,7 +47,7 @@ curl localhost:8000/api/health
 Open <http://localhost:8000> for the web UI, or `/docs` for the generated API
 reference.
 
-The image is built on `python:3.12-slim` with `opencv-python-headless`, so it
+The image is built on `python:3.14-slim` with `opencv-python-headless`, so it
 carries no X11 stack at all. It runs as a non-root user that belongs to `video`
 and `dialout`, and it needs no writable filesystem.
 
@@ -59,7 +59,7 @@ irthermal check-config -c config.example.toml
 irthermal serve -c config.toml
 ```
 
-Python 3.12 or newer. On Windows and macOS add the `ffmpeg` extra -- see
+Python 3.14 or newer. On Windows and macOS add the `ffmpeg` extra -- see
 [Windows and macOS](#windows-and-macos).
 
 ```bash
@@ -109,7 +109,8 @@ IRTHERMAL__SERVER__PORT=9000 IRTHERMAL__SERVER__LOG_FORMAT=console irthermal ser
 ```
 
 Explicit arguments beat environment variables, which beat the file. See
-[`config.example.toml`](config.example.toml) for the annotated version; the
+[`config.example.toml`](config.example.toml) for an example and
+[`docs/configuration.md`](docs/configuration.md) for every option; the
 shape is:
 
 ```toml
@@ -204,8 +205,10 @@ explicitly:
 curl -X POST localhost:8000/api/cameras/bench/calibrate
 ```
 
-Set `calibration_file` and that reference is kept, so this is a one-time chore
-rather than something to repeat after every restart:
+That reference is kept, so this is a one-time chore rather than something to
+repeat after every restart. By default it goes to `.temp/calibration/<id>.npz`
+under the working directory (git-ignored); set `calibration_file` to put it
+somewhere else:
 
 ```toml
 [[cameras]]

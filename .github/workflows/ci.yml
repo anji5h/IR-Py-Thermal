@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+      - ".github/**"
+      - "**.md"
   pull_request:
 
 jobs:
@@ -17,7 +22,7 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.14
 
       - name: Install
         run: uv sync --extra dev

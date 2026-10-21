@@ -27,6 +27,8 @@ from irthermal.core.render import COLORMAPS, DEFAULT_COLORMAP
 
 DEFAULT_CONFIG_PATH = Path("/etc/irthermal/config.toml")
 
+DEFAULT_CALIBRATION_DIR = Path(".temp/calibration")
+
 # Usable as a URL path segment and a Prometheus label value.
 IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
 
@@ -125,6 +127,12 @@ class CameraConfig(BaseModel):
                 f"auto_detect (got {sum(sources)})"
             )
             raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _default_calibration_file(self) -> Self:
+        if self.calibration_file is None:
+            self.calibration_file = DEFAULT_CALIBRATION_DIR / f"{self.id}.npz"
         return self
 
     @model_validator(mode="after")

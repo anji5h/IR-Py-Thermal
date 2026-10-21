@@ -3,7 +3,7 @@ name = "irthermal"
 version = "2.0.0.dev0"
 description = "Thermal camera server: HTTP API, MJPEG streaming and Prometheus metrics for XTherm / HT301 / InfiRay cameras"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Dima", email = "me@dmytroengineering.com" }]
 
@@ -52,7 +52,7 @@ filterwarnings = ["error"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [
@@ -76,7 +76,7 @@ ignore = [
 "tests/*" = ["ANN", "ARG"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 packages = ["irthermal"]
 mypy_path = "src"
 strict = true

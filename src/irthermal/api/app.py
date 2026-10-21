@@ -51,7 +51,7 @@ def create_app(
     jobs = JobStore(camera_manager)
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+    async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         log.info("server.starting", cameras=camera_manager.ids)
         await camera_manager.start()
         try:

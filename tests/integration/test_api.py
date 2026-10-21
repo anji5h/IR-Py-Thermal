@@ -197,7 +197,7 @@ async def finished_job(client: AsyncClient, job_id: str, timeout: float = 20.0) 
 
 
 @asynccontextmanager
-async def running_server(settings: Settings) -> AsyncGenerator[str, None]:
+async def running_server(settings: Settings) -> AsyncGenerator[str]:
     """A real uvicorn server on an ephemeral port, for as long as the block runs.
 
     Two reasons this is a context manager used inside the test rather than a
