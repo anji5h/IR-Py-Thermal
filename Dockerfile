@@ -1,25 +1,40 @@
-FROM python:3.10-slim
+FROM python:3.12-slim-bookworm AS build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libgl1 \
-    libglib2.0-0 \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
 
-ENV POETRY_VERSION=1.8.3 \
-    POETRY_HOME=/opt/poetry \
-    POETRY_VIRTUALENVS_CREATE=false \
-    POETRY_NO_INTERACTION=1
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-RUN curl -sSL https://install.python-poetry.org | python - && \
-    ln -s /opt/poetry/bin/poetry /usr/local/bin/poetry
+WORKDIR /src
+COPY pyproject.toml README.md ./
+COPY src ./src
 
-WORKDIR /app
+RUN --mount=type=cache,target=/root/.cache/pip pip install .
 
-COPY pyproject.toml poetry.lock* README.md ./
 
-RUN poetry check && poetry install --no-root --only main
+FROM python:3.12-slim-bookworm AS runtime
 
-COPY . .
-CMD ["python", "pyplot.py", "-r", "-c", "-o", "8.5", "--headless"]
+LABEL org.opencontainers.image.title="IRThermal" \
+      org.opencontainers.image.description="Thermal camera server: HTTP API, MJPEG streaming and Prometheus metrics" \
+      org.opencontainers.image.source="https://github.com/diminDDL/IR-Py-Thermal" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    IRTHERMAL__SERVER__HOST=0.0.0.0 \
+    IRTHERMAL__SERVER__PORT=8000
+
+COPY --from=build /opt/venv /opt/venv
+
+RUN groupadd --gid 10001 irthermal \
+    && useradd --no-create-home --uid 10001 --gid 10001 \
+       --groups video,dialout --shell /usr/sbin/nologin irthermal
+
+USER irthermal
+WORKDIR /etc/irthermal
+EXPOSE 8000
+
+ENTRYPOINT ["irthermal"]
+CMD ["serve"]

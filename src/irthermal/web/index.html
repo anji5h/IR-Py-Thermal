@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRThermal</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>IRThermal</h1>
+  <label class="inline">Camera
+    <select id="camera"></select>
+  </label>
+  <span id="link" class="badge offline">offline</span>
+  <span class="spacer"></span>
+  <a href="/docs">API docs</a>
+  <a href="/metrics">Metrics</a>
+</header>
+
+<p id="error" class="error" hidden></p>
+
+<main>
+  <section class="viewer">
+    <div id="measurePoints"></div> 
+    <img id="stream" alt="Live thermal stream" style="position: relaitve">
+    <p class="caption">
+      <span id="source">&mdash;</span>
+      <span id="rate">&mdash;</span>
+      <span id="seq">&mdash;</span>
+      <span id="coordinates">X: —, Y: —</span>
+    </p>
+  </section>
+
+  <aside class="panel">
+    <fieldset>
+      <legend>View</legend>
+
+      <label>Colormap
+        <select id="colormap"></select>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="auto-scale" checked> Auto scale
+      </label>
+
+      <div class="pair">
+        <label>Min &deg;C
+          <input type="number" id="min-celsius" step="0.5" disabled>
+        </label>
+        <label>Max &deg;C
+          <input type="number" id="max-celsius" step="0.5" disabled>
+        </label>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="equalize"> Equalise histogram
+      </label>
+
+      <label>Zoom <output id="upscale-value">3&times;</output>
+        <input type="range" id="upscale" min="1" max="8" step="1" value="3">
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Control</legend>
+      <button type="button" onclick="toggleMarkers()" id="toggleMarkers">Toggle markers</button>
+      <button type="button" id="calibrate">Calibrate shutter</button>
+
+      <input id="measureLabelNaming" type="text" name="label" placeholder="name here">
+      <button type="button" onclick="toggleAddMeasurePoint()" id="toggleAdding">Toggle marker adding</button>
+    </fieldset>
+
+    <form class="panel-form" id="parameters">
+      <fieldset>
+        <legend>Measurement</legend>
+
+        <div class="pair">
+          <label>Emissivity
+            <input type="number" name="emissivity" step="0.01" min="0.01" max="1" placeholder="0.95">
+          </label>
+          <label>Offset &deg;C
+            <input type="number" name="temperature_offset" step="0.1" placeholder="0">
+          </label>
+        </div>
+
+        <button type="submit">Apply</button>
+      </fieldset>
+    </form>
+  </aside>
+
+  <div> <!-- temporary area to add features here before fixing it somewhere else -->
+  </div>
+</main>
+
+<section class="readings">
+  <div>
+    <h2>Measurements</h2>
+    <table id="points">
+      <thead><tr><th>Point</th><th>x</th><th>y</th><th>&deg;C</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Camera</h2>
+    <dl id="telemetry"></dl>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

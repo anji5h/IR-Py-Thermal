@@ -1,9 +1,0 @@
-services:
-  ir-py-thermal:
-    build: .
-    container_name: ir-py-thermal
-    devices:
-      - /dev/video0:/dev/video0
-      - /dev/video1:/dev/video1
-    ports:
-      - "8000:8000"
